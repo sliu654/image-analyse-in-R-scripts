@@ -1,0 +1,174 @@
+#imagejScriptMaker.r
+
+
+macroMake = function(circleSizeDiameter = 6){
+#location to find images and create csv output files
+	dataPath = choose.dir(); #dataPath
+	dataPath = gsub(dataPath, pattern = "\\\\", replacement = "/"); #dataPath
+	.dataPath <<- dataPath
+	
+#starting image of the sequence
+	#parses for the name of the image
+	startingImage = file.choose(); #startingImage
+	startingImage = strsplit(startingImage, split = "\\\\")[[1]]; #startingImage
+	startingImage = startingImage[length(startingImage)]; #startingImage
+
+#should already be in csv format, just dump it in
+	coordinates = read.csv(file.choose()); coordinates
+	
+#this command handles finding of only "X" and "Y" columns
+	.coordinates = coordinates[,match(c("X","Y"), names(coordinates))]; #coordinates
+	.coordinates <<- coordinates
+	
+#circle size
+	circleSizeRadius = circleSizeDiameter/2
+
+#folder name trims dataPath for name of directory
+	folderParse = strsplit(dataPath, split = "/")[[1]]; #folderParse
+	folderParse = folderParse[length(folderParse)]; #folderParse
+
+#number of coordinates in the list
+	numCoords = length(coordinates[,1]); #numCoords
+
+#null vector to hold line items
+	imagej = c(); #imagej
+	
+#coordinates vector positions counter
+	coordCounter = 1
+
+#add line items to the empty vector
+	imagej = c(imagej, 'run("Clear Results");', paste('run("Image Sequence...", ', '"open=[', dataPath, '/', startingImage, '] sort");', sep = ""), 'run("Split Channels");', paste('selectWindow("',folderParse ,' (green)");', sep = ""), 'close();'); #imagej
+
+#creates imagej macro line items for circles of diamter 16 (default unless changed) centered at coordinates given
+	#change
+	for(h in 1:2){
+	
+		#generates text based on red channel and blue channel. red is used first
+		if(h == 1){
+			redBlue = "red"
+		} else {
+			redBlue = "blue"
+		}#end if
+		
+		#generates line item text
+		for(i in 1:numCoords){
+		
+			#fix for the way R reads and sorts numbers when they are characters
+			fileNumber = as.character(i)
+			if(i < 10){
+				fileNumber = paste("0", fileNumber, sep = "")
+			}#end if
+			
+			#object that holds line items of text
+			#uses original dataPath and startingImage information
+			imagej = c(imagej, paste('selectWindow("', folderParse,' (', redBlue,')");', sep = ""), paste(paste("makeOval(", coordinates[coordCounter,1]-circleSizeRadius, ", ", sep = ""), coordinates[coordCounter,2]-circleSizeRadius, ", ", circleSizeDiameter, ", ", circleSizeDiameter, ");", sep = ""), 'run("Plot Z-axis Profile");', 'Plot.showValues()', paste('saveAs("Results", "',dataPath, '/', redBlue, fileNumber, '.csv");', sep = ""), paste('selectWindow("', folderParse, ' (', redBlue, ')-', as.integer(coordinates[coordCounter,1]-circleSizeRadius), '-', as.integer(coordinates[coordCounter,2])-circleSizeRadius, '");', sep = ""), 'close();', 'run("Clear Results");')
+			
+			coordCounter = coordCounter + 1
+			
+		}#end i loop
+		
+		coordCounter = 1
+	}#end h loop
+
+#drops imagej object into a text file that can be pasted into the imagej macro script box
+	write(imagej, paste(dataPath, "imagejOutputMacro.txt", sep = "/"))
+
+print("done")
+}#end macroMake function
+
+#################################
+#output csv manip
+
+dataAggregate = function(){
+#check if .dataPath exists, if not choose directory
+	if(!exists(".dataPath")){
+		.dataPath = choose.dir()
+		.dataPath <<- .dataPath
+	}#end if
+
+#acquire the list of files that are from red and blue, with absolute name
+	dataList = list.files(.dataPath, pattern = "red|blue", full.names = TRUE)
+
+#loop to read data and add it to the dataOutput object
+	for(j in 1:length(dataList)){
+
+		#trims absolute path into a name to be used for the column
+		nameParse = strsplit(dataList[j], split = "/")[[1]]; #nameParse
+		nameParse = nameParse[length(nameParse)]; #nameParse
+		nameParse = substr(nameParse, 1, length(strsplit(nameParse, split = "")[[1]])-4); #print(nameParse)
+		
+		dataRead = read.csv(dataList[j])
+		
+		if(j == 1){
+			#use first dataset as growing output file in order to have slice data and name of channel/sample
+			names(dataRead) = c("slice", nameParse)
+			dataOutput = dataRead
+		} else {
+			dataRead = dataRead[,-1]
+			dataOutput = cbind(dataOutput, dataRead)
+			names(dataOutput)[ncol(dataOutput)] = nameParse
+		}#end if
+		
+	}#end j loop
+	
+#write the dataOutput object to file using the previous file path 
+	write.csv(dataOutput, paste(.dataPath, "dataAggregate.csv", sep = "/"), row.names = FALSE)
+
+#make new object to calculate absorbance
+	dataOutputNormalized = dataOutput
+	
+#perform absorbance conversion on columns
+#get value of first line item, excludes slice column
+#use mapply for matrix division
+	#mapply("/", df, vec)
+	dataOutputNormalized = mapply("/", dataOutput[,c(2:ncol(dataOutput))], dataOutput[1, c(2:ncol(dataOutput))]); #head(dataOutputNormalized, 2)
+
+#write dataOutputNormalized to file to preserve documentation
+	write.csv(dataOutputNormalized, paste(.dataPath, "dataNormalized.csv", sep = "/"), row.names = FALSE)
+
+#calculate selectivity of red/(red + blue)
+#0 divided by 0 gives "not a number" NaN in R
+#a number divided by 0 gives "infinite" Inf in R
+
+	selectivity = (2-log(100*(dataOutputNormalized[,grep(colnames(dataOutputNormalized), pattern = "red")]), 10))/((2-log(100*(dataOutputNormalized[,grep(colnames(dataOutputNormalized), pattern = "red")]), 10))+(2-log(100*(dataOutputNormalized[,grep(colnames(dataOutputNormalized), pattern = "blue")]), 10))); #head(selectivity, 2)
+	
+#throw out the first row of NaN and rename the columns	
+	selectivity = selectivity[-1,]; #head(selectivity, 2)
+	sampleNames = gsub(colnames(selectivity), pattern = "red", replacement = "sample"); #sampleNames
+	selectivity = data.frame(selectivity); #head(selectivity, 2)
+	names(selectivity) = sampleNames
+	
+#save as dataSelectivity.csv to file path
+	write.csv(selectivity, paste(.dataPath, "dataSelectivity.csv", sep = "/"), row.names = FALSE)
+
+#toss first few rows that are greater than 1
+	selectivity = selectivity[-c(1,2),]; head(selectivity)
+
+#empty matrix to hold rank data
+	ranking = matrix(ncol = 5, nrow = 0); #ranking
+
+#find the maximum value for each sample, associate x y coords, max value, and slice
+	for(k in 1:ncol(selectivity)){
+		
+		maxEach = matrix(data = c(paste("sample", k, sep = ""), .coordinates[k,1], .coordinates[k,2], max(selectivity[,k]), which(selectivity[,k] == max(selectivity[,k]))+2), ncol = 5)
+		
+		ranking = rbind(ranking, maxEach)
+		
+	}#end k loop
+
+#rename ranking matrix columns
+	names(ranking) = c("sample", "X", "y", "maxValue", "slice"); #head(ranking)
+
+#write ranking object
+	write.csv(ranking, paste(.dataPath, "ranking.csv", sep = "/"), row.names = FALSE)
+
+#display the sample which is most selective
+	print(ranking[which(ranking[,4] == max(ranking[,4])),])
+
+print("done")
+}#end dataAggregate function
+
+
+
+
+
